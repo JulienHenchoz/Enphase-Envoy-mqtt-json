@@ -143,8 +143,9 @@ while not connection_success:
             log('FREEDS is active, using topic:' + MQTT_TOPIC_FREEDS)
         else:
             log('FREEDS is inactive')
-    except e:
-        log('Exception connecting to Envoy:' + e)
+    except Exception as e:
+        log('Exception connecting to Envoy:')
+        print(e)
         log('Retrying in 30 seconds...')
         connection_success = False
         time.sleep(30)
@@ -184,7 +185,7 @@ if envoy_version != 5:
         try:
             ENVOY_TOKEN = f.read()
             if ENVOY_TOKEN:
-                log( 'Read token from file',tokenfile,': ',ENVOY_TOKEN)
+                log( 'Read token from file' + tokenfile,': '+ ENVOY_TOKEN)
                 pass
             else:
                 log( 'No token in file:' + tokenfile)
@@ -328,7 +329,6 @@ def scrape_stream_production():
                 time.sleep(20)
             else:
                 if is_json_valid(stream.content):
-                    #log( 'Json Response:' + stream.json())
                     json_string = json.dumps(stream.json())
                     client.publish(topic= MQTT_TOPIC , payload= json_string, qos=0 )
                     if USE_FREEDS:
@@ -336,7 +336,8 @@ def scrape_stream_production():
                         client.publish(topic= MQTT_TOPIC_FREEDS , payload= json_string_freeds, qos=0 )
                     time.sleep(3)
                 else:
-                    log( 'Invalid Json Response:' + stream.content)
+                    log( 'Invalid Json Response:')
+                    print(stream.content)
                     time.sleep(20)
         except requests.exceptions.RequestException as e:
             log( ' Exception fetching stream data: %s' % e)
@@ -384,7 +385,8 @@ def scrape_stream_livedata():
                         client.publish(topic= MQTT_TOPIC_FREEDS , payload= json_string_freeds, qos=0 )
                     time.sleep(3)
             elif not is_json_valid(stream.content):
-                log( 'Invalid Json Response:' + stream.content)
+                log( 'Invalid Json Response:')
+                print(stream.content)
                 time.sleep(20)
 
         except requests.exceptions.RequestException as e:
@@ -400,11 +402,13 @@ def scrape_stream_meters():
             url = 'https://%s/ivp/meters/readings' % ENVOY_HOST
             if DEBUG: log( 'Url:' + url)
             headers = {"Authorization": "Bearer " + ENVOY_TOKEN}
-            if DEBUG: log( 'headers:' + headers)
+            if DEBUG: log( 'headers:' + json.dumps(headers))
             stream = session.get(url, timeout=5, verify=False, headers=headers)
             # Dump response headers
-            log( 'Response headers:' + stream.headers)
-            if DEBUG: log( 'stream:' + stream.content)
+            log( 'Response headers:' + json.dumps(dict(stream.headers)))
+            if DEBUG:
+                log( 'stream:')
+                print(stream.content)
             if stream.status_code == 401:
                 log('Failed to autenticate' + stream, ' generating new token')
                 ENVOY_TOKEN=token_gen(None)
@@ -415,18 +419,21 @@ def scrape_stream_meters():
             elif stream.status_code != 200:
                 log('Failed connect to Envoy got ' + stream)
                 time.sleep(20)
-                if DEBUG: log( 'stream after != 200:' + stream.content)
+                if DEBUG:
+                    log( 'stream after != 200:')
+                    print(stream.content)
             else:
                 if is_json_valid(stream.content):
-                    if DEBUG: log( 'Json Response:' + stream.json())
                     json_string = json.dumps(stream.json())
+                    if DEBUG: log( 'Json Response:' + json_string)
                     client.publish(topic= MQTT_TOPIC , payload= json_string, qos=0 )
                     if USE_FREEDS:
                         json_string_freeds = json.dumps(round(stream.json()[1]["activePower"]))
                         if DEBUG: log( 'Json freeds:' + stream.json()[1]["activePower"])
                         client.publish(topic= MQTT_TOPIC_FREEDS , payload= json_string_freeds, qos=0 )
                 else:
-                    log( 'Invalid Json Response:' + stream.content)
+                    log( 'Invalid Json Response:')
+                    print(stream.content)
                     time.sleep(20)
         except requests.exceptions.RequestException as e:
             log( ' Exception fetching stream data: %s' % e)
