@@ -80,7 +80,7 @@ tokenfile = 'data/token.txt'
 
 def log(message):
     dt_string = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-    print(message)
+    print(dt_string + ' - ' + message)
 
 #json validator
 def is_json_valid(json_data):
