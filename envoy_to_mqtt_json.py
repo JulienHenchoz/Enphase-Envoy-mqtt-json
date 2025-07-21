@@ -31,6 +31,14 @@ pp = pprint.PrettyPrinter()
 import xml.etree.ElementTree as ET
 import hashlib
 import os
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+session = requests.Session()
+retry = Retry(connect=3, backoff_factor=0.5)
+adapter = HTTPAdapter(max_retries=retry)
+session.mount('http://', adapter)
+session.mount('https://', adapter)
 
 
 with open("data/options.json", "r") as f:
@@ -54,7 +62,7 @@ MQTT_PORT = option_dict["MQTT_PORT"]
 MQTT_TOPIC = option_dict["MQTT_TOPIC"]  # Note - if you change this topic, you'll need to also change the value_templates in configuration.yaml
 MQTT_USER = option_dict["MQTT_USER"]     # As described in the Documentation for the HA Mosquito broker add-on, the MQTT user/password are the user setup for mqtt
 MQTT_PASSWORD = option_dict["MQTT_PASSWORD"]    # If you use an external broker, use those details instead
-ENVOY_HOST = option_dict["ENVOY_HOST"]  # ** Enter envoy-s IP. Note - use FQDN and not envoy.local if issues connecting 
+ENVOY_HOST = option_dict["ENVOY_HOST"]  # ** Enter envoy-s IP. Note - use FQDN and not envoy.local if issues connecting
 ENVOY_USER= option_dict["ENVOY_USER"]
 ENVOY_USER_PASS= option_dict["ENVOY_USER_PASS"]
 USE_FREEDS= option_dict["USE_FREEDS"]
@@ -70,6 +78,10 @@ gSerialNumber = None
 tokenfile = 'data/token.txt'
 ####  End Settings - no changes after this line
 
+def log(message):
+    dt_string = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    print(message)
+
 #json validator
 def is_json_valid(json_data):
     if isinstance(json_data, bytes):
@@ -81,64 +93,81 @@ def is_json_valid(json_data):
     return True
 
 # Get info
-url_info ='http://%s/info' % ENVOY_HOST
-response_info = requests.get(url_info, verify=False)
-if response_info.status_code != 200:
-    print(dt_string,'Failed connect to Envoy to get info got ', response_info, 'Verify URL', url_info )
-else:
-    root = ET.fromstring(response_info.content)
-    serialNumber = [child.text for child in root.iter('sn')]
-    version = [child.text for child in root.iter('software')]
+connection_success = False
 
-if len(serialNumber) != 0:
-    serialNumber = serialNumber[0]
-    print(dt_string,'Serial number:', serialNumber)
-else:
-    print (dt_string,'Cannot decode serial number did not got valid XML for <sn> from ', url_info)
-    print (dt_string,'Response content:', response_info.content)
+while not connection_success:
+    try:
+        log('Trying to connect to Envoy at' + ENVOY_HOST + 'to get info')
+        url_info ='http://%s/info' % ENVOY_HOST
+        response_info = session.get(url_info, verify=False)
+        if response_info.status_code != 200:
+            log('Failed connect to Envoy to get info got ' + response_info + 'Verify URL' + url_info )
+            time.sleep(30)
+        else:
+            root = ET.fromstring(response_info.content)
+            serialNumber = [child.text for child in root.iter('sn')]
+            version = [child.text for child in root.iter('software')]
+            connection_success = True
+            log("Connection to Envoy at" + ENVOY_HOST + "successful")
 
-if len(version) != 0:
-    if version[0].count('D7.') == 1:
-        print (dt_string,'Detected FW version 7')
-        envoy_version=7
-    elif version[0].count('D8.') == 1:
-        print (dt_string,'Detected Firmware version D8')
-        envoy_version=8
-    elif version[0].count('R5.') == 1:
-        print (dt_string,'Detected Firmware version R5')
-        envoy_version=5
-    elif version[0].count('D5.') == 1:
-        print (dt_string,'Detected Firmware version D5')
-        envoy_version=5
-    else:
-        print (dt_string,'Cannot match firmware version, got ', version)
-else:
-    print (dt_string,'Cannot decode firmware version, did not got valid XML for <software> from ', url_info)
-    print (dt_string,'Response content:', response_info.content)
+        if len(serialNumber) != 0:
+            serialNumber = serialNumber[0]
+            log('Serial number:' + serialNumber)
+        else:
+            log('Cannot decode serial number did not got valid XML for <sn> from ' + url_info)
+            log('Response content:' + response_info.content)
+            time.sleep(30)
 
-if USE_FREEDS:
-    print (dt_string,'FREEDS is active, using topic:', MQTT_TOPIC_FREEDS)
-else:
-    print (dt_string,'FREEDS is inactive')
+        if len(version) != 0:
+            if version[0].count('D7.') == 1:
+                log('Detected FW version 7')
+                envoy_version=7
+            elif version[0].count('D8.') == 1:
+                log('Detected Firmware version D8')
+                envoy_version=8
+            elif version[0].count('R5.') == 1:
+                log('Detected Firmware version R5')
+                envoy_version=5
+            elif version[0].count('D5.') == 1:
+                log('Detected Firmware version D5')
+                envoy_version=5
+            else:
+                log('Cannot match firmware version, got ' + version)
+                time.sleep(30)
+        else:
+            log('Cannot decode firmware version, did not got valid XML for <software> from ' + url_info)
+            log('Response content:' + response_info.content)
+            time.sleep(30)
+
+        if USE_FREEDS:
+            log('FREEDS is active, using topic:' + MQTT_TOPIC_FREEDS)
+        else:
+            log('FREEDS is inactive')
+    except e:
+        log('Exception connecting to Envoy:' + e)
+        log('Retrying in 30 seconds...')
+        connection_success = False
+        time.sleep(30)
 
 #Token generator
 def token_gen(token):
     if token is None or token=='':
-        print(dt_string,'Generating new token')
+        log('Generating new token')
         data = {'user[email]': ENVOY_USER, 'user[password]': ENVOY_USER_PASS}
-        if DEBUG: print(dt_string, 'Token data:', data)
+        if DEBUG: log( 'Token data:' + data)
         response = requests.post('https://enlighten.enphaseenergy.com/login/login.json?', data=data)
         if response.status_code != 200:
-            print(dt_string,'Failed connect to https://enlighten.enphaseenergy.com/login/login.json? to generate token part 1 got', response, ' using this info', data )
+            log('Failed connect to https://enlighten.enphaseenergy.com/login/login.json? to generate token part 1 got' + response, ' using this info' + data )
+            time.sleep(20)
         else:
-            if DEBUG: print(dt_string, 'Token response', response.text)
+            if DEBUG: log( 'Token response' + response.text)
             response_data = json.loads(response.text)
             data = {'session_id': response_data['session_id'], 'serial_num': serialNumber, 'username': ENVOY_USER}
             response = requests.post('https://entrez.enphaseenergy.com/tokens', json=data)
             if response.status_code != 200:
-                print(dt_string,'Failed connect to https://entrez.enphaseenergy.com/tokens to generate token part 2 got', response, ' using this info', data )
+                log('Failed connect to https://entrez.enphaseenergy.com/tokens to generate token part 2 got' + response, ' using this info' + data )
             else:
-                print(dt_string,'Token generated', response.text)
+                log('Token generated' + response.text)
                 with open(tokenfile, 'w') as f:
                     f.write(response.text)
                 return response.text
@@ -155,10 +184,10 @@ if envoy_version != 5:
         try:
             ENVOY_TOKEN = f.read()
             if ENVOY_TOKEN:
-                print (dt_string, 'Read token from file',tokenfile,': ',ENVOY_TOKEN)
+                log( 'Read token from file',tokenfile,': ',ENVOY_TOKEN)
                 pass
             else:
-                print (dt_string, 'No token in file:', tokenfile)
+                log( 'No token in file:' + tokenfile)
                 ENVOY_TOKEN=token_gen(None)
                 pass
         except Exception as e:
@@ -189,22 +218,22 @@ def on_connect(client, userdata, flags, rc):
     5: Refused . not authorised (MQTT v3.1 broker only)
     """
     if rc == 0:
-        print(dt_string,"Connected to %s:%s" % (MQTT_HOST, MQTT_PORT))
+        log("Connected to %s:%s" % (MQTT_HOST, MQTT_PORT))
         # Subscribe to our incoming topic
         client.subscribe(MQTT_TOPIC)
-        print(dt_string,'Subscribed to MQTT_TOPIC:', "{0}".format(MQTT_TOPIC))
+        log('Subscribed to MQTT_TOPIC:' + "{0}".format(MQTT_TOPIC))
     elif rc == 1:
-        print(dt_string," Connection refused - unacceptable protocol version")
+        log(" Connection refused - unacceptable protocol version")
     elif rc == 2:
-        print(dt_string," Connection refused - identifier rejected")
+        log(" Connection refused - identifier rejected")
     elif rc == 3:
-        print(dt_string," Connection refused - server unavailable")
+        log(" Connection refused - server unavailable")
     elif rc == 4:
-        print(dt_string," Connection refused - bad user name or password")
+        log(" Connection refused - bad user name or password")
     elif rc == 5:
-        print(dt_string," Connection refused - not authorised")
+        log(" Connection refused - not authorised")
     else:
-        print(dt_string," Connection failed - result code %d" % (rc))
+        log(" Connection failed - result code %d" % (rc))
 
 def on_publish(client, userdata, mid) :
     print("mid: {0}".format(str(mid)))
@@ -223,11 +252,11 @@ client.on_connect    = on_connect
 #client.on_publish    = on_publish
 client.on_disconnect = on_disconnect
 # Uncomment to enable debug messages
-#client.on_log       = on_log
+client.on_log       = on_log
 client.username_pw_set(MQTT_USER, MQTT_PASSWORD)
-if DEBUG: print(dt_string, 'Will wait for mqtt connect')
+if DEBUG: log( 'Will wait for mqtt connect')
 wait: client.connect(MQTT_HOST,int(MQTT_PORT), 30)
-if DEBUG: print(dt_string, 'Finished waiting for mqtt connect')
+if DEBUG: log( 'Finished waiting for mqtt connect')
 wait: client.loop_start()
 
 ## Generation of Envoy password based on serial number, copy from https://github.com/sarnau/EnphaseEnergy/passwordCalc.py
@@ -285,144 +314,161 @@ def scrape_stream_production():
     ENVOY_TOKEN=token_gen(ENVOY_TOKEN)
     while True:
         try:
+            print("Polling production data")
             url = 'http://%s/production.json' % ENVOY_HOST
             headers = {"Authorization": "Bearer " + ENVOY_TOKEN}
-            stream = requests.get(url, timeout=5, verify=False, headers=headers)
+            stream = session.get(url, timeout=5, verify=False, headers=headers)
             if stream.status_code == 401:
-                print(dt_string,'Failed to autenticate', stream, ' generating new token')
+                log('Failed to autenticate' + stream, ' generating new token')
                 ENVOY_TOKEN=token_gen(None)
                 headers = {"Authorization": "Bearer " + ENVOY_TOKEN}
-                stream = requests.get(url, timeout=5, verify=False, headers=headers)
+                stream = session.get(url, timeout=5, verify=False, headers=headers)
             elif stream.status_code != 200:
-                print(dt_string,'Failed connect to Envoy got ', stream)
+                log('Failed connect to Envoy got ' + stream)
+                time.sleep(20)
             else:
                 if is_json_valid(stream.content):
-                    #print(dt_string, 'Json Response:', stream.json())
+                    #log( 'Json Response:' + stream.json())
                     json_string = json.dumps(stream.json())
                     client.publish(topic= MQTT_TOPIC , payload= json_string, qos=0 )
-                    if USE_FREEDS: 
+                    if USE_FREEDS:
                         json_string_freeds = json.dumps(round(stream.json()['consumption'][0]['wNow']))
                         client.publish(topic= MQTT_TOPIC_FREEDS , payload= json_string_freeds, qos=0 )
-                    time.sleep(1)
+                    time.sleep(3)
                 else:
-                    print(dt_string, 'Invalid Json Response:', stream.content)
+                    log( 'Invalid Json Response:' + stream.content)
+                    time.sleep(20)
         except requests.exceptions.RequestException as e:
-            print(dt_string, ' Exception fetching stream data: %s' % e)
+            log( ' Exception fetching stream data: %s' % e)
+            time.sleep(20)
 
 def scrape_stream_livedata():
     global ENVOY_TOKEN
     ENVOY_TOKEN=token_gen(ENVOY_TOKEN)
     activate_json={"enable": 1}
     while True:
+        print("Polling livedata")
         try:
-            url = 'https://%s/ivp/livedata/status' % ENVOY_HOST 
+            url = 'https://%s/ivp/livedata/status' % ENVOY_HOST
             headers = {"Authorization": "Bearer " + ENVOY_TOKEN}
-            stream = requests.get(url, timeout=5, verify=False, headers=headers)
+            stream = session.get(url, timeout=5, verify=False, headers=headers)
             if stream.status_code == 401:
-                print(dt_string,'Failed to autenticate', stream, ' generating new token')
+                log('Failed to autenticate' + stream, ' generating new token')
                 ENVOY_TOKEN=token_gen(None)
                 headers = {"Authorization": "Bearer " + ENVOY_TOKEN}
-                stream = requests.get(url, timeout=5, verify=False, headers=headers)
+                stream = session.get(url, timeout=5, verify=False, headers=headers)
             elif stream.status_code != 200:
-                print(dt_string,'Failed connect to Envoy got ', stream)
+                log('Failed connect to Envoy got ' + stream)
+                time.sleep(20)
             elif is_json_valid(stream.content):
                 if stream.json()['connection']['sc_stream'] == 'disabled':
                     url_activate='https://%s/ivp/livedata/stream' % ENVOY_HOST
-                    print(dt_string, 'Stream is not active, trying to enable')
+                    log( 'Stream is not active, trying to enable')
                     response_activate=requests.post(url_activate, verify=False, headers=headers, json=activate_json)
                     if is_json_valid(response_activate.content):
                         if response_activate.json()['sc_stream']=='enabled':
-                            stream = requests.get(url, stream=True, timeout=5, verify=False, headers=headers)
-                            print(dt_string, 'Success, stream is active now')
+                            stream = session.get(url, stream=True, timeout=5, verify=False, headers=headers)
+                            log( 'Success, stream is active now')
                         else:
-                            print(dt_string, 'Failed to activate stream ', response_activate.content)
+                            log( 'Failed to activate stream ' + response_activate.content)
+                            time.sleep(20)
                     else:
-                        print(dt_string, 'Invalid Json Response:', response_activate.content)
+                        log( 'Invalid Json Response:' + response_activate.content)
+                        time.sleep(20)
                 else:
                     json_string = json.dumps(stream.json())
-                    #print(dt_string, 'Json Response:', json_string)
+                    #log( 'Json Response:' + json_string)
                     client.publish(topic= MQTT_TOPIC , payload= json_string, qos=0 )
-                    if USE_FREEDS: 
+                    if USE_FREEDS:
                         json_string_freeds = json.dumps(round(stream.json()["meters"]["grid"]["agg_p_mw"]*0.001))
                         client.publish(topic= MQTT_TOPIC_FREEDS , payload= json_string_freeds, qos=0 )
-                    time.sleep(0.6)
+                    time.sleep(3)
             elif not is_json_valid(stream.content):
-                print(dt_string, 'Invalid Json Response:', stream.content)
+                log( 'Invalid Json Response:' + stream.content)
+                time.sleep(20)
 
         except requests.exceptions.RequestException as e:
-            print(dt_string, ' Exception fetching stream data: %s' % e)
+            log( ' Exception fetching stream data: %s' % e)
+            time.sleep(20)
 
 def scrape_stream_meters():
     global ENVOY_TOKEN
     ENVOY_TOKEN=token_gen(ENVOY_TOKEN)
     while True:
+        print("Polling meters data")
         try:
             url = 'https://%s/ivp/meters/readings' % ENVOY_HOST
-            if DEBUG: print(dt_string, 'Url:', url)
+            if DEBUG: log( 'Url:' + url)
             headers = {"Authorization": "Bearer " + ENVOY_TOKEN}
-            if DEBUG: print(dt_string, 'headers:', headers)
-            stream = requests.get(url, timeout=5, verify=False, headers=headers)
-            if DEBUG: print(dt_string, 'stream:', stream.content)
+            if DEBUG: log( 'headers:' + headers)
+            stream = session.get(url, timeout=5, verify=False, headers=headers)
+            # Dump response headers
+            log( 'Response headers:' + stream.headers)
+            if DEBUG: log( 'stream:' + stream.content)
             if stream.status_code == 401:
-                print(dt_string,'Failed to autenticate', stream, ' generating new token')
+                log('Failed to autenticate' + stream, ' generating new token')
                 ENVOY_TOKEN=token_gen(None)
                 headers = {"Authorization": "Bearer " + ENVOY_TOKEN}
-                if DEBUG: print(dt_string, 'headers after 401:', headers)
-                stream = requests.get(url, timeout=5, verify=False, headers=headers)
-                if DEBUG: print(dt_string, 'stream after 401:', stream.content)
+                if DEBUG: log( 'headers after 401:' + headers)
+                stream = session.get(url, timeout=5, verify=False, headers=headers)
+                if DEBUG: log( 'stream after 401:' + stream.content)
             elif stream.status_code != 200:
-                print(dt_string,'Failed connect to Envoy got ', stream)
-                if DEBUG: print(dt_string, 'stream after != 200:', stream.content)
+                log('Failed connect to Envoy got ' + stream)
+                time.sleep(20)
+                if DEBUG: log( 'stream after != 200:' + stream.content)
             else:
                 if is_json_valid(stream.content):
-                    if DEBUG: print(dt_string, 'Json Response:', stream.json())
+                    if DEBUG: log( 'Json Response:' + stream.json())
                     json_string = json.dumps(stream.json())
                     client.publish(topic= MQTT_TOPIC , payload= json_string, qos=0 )
-                    if USE_FREEDS: 
+                    if USE_FREEDS:
                         json_string_freeds = json.dumps(round(stream.json()[1]["activePower"]))
-                        if DEBUG: print(dt_string, 'Json freeds:', stream.json()[1]["activePower"])
+                        if DEBUG: log( 'Json freeds:' + stream.json()[1]["activePower"])
                         client.publish(topic= MQTT_TOPIC_FREEDS , payload= json_string_freeds, qos=0 )
-                    time.sleep(0.6)
                 else:
-                    print(dt_string, 'Invalid Json Response:', stream.content)
+                    log( 'Invalid Json Response:' + stream.content)
+                    time.sleep(20)
         except requests.exceptions.RequestException as e:
-            print(dt_string, ' Exception fetching stream data: %s' % e)
+            log( ' Exception fetching stream data: %s' % e)
+            time.sleep(20)
+        time.sleep(3)
 
 def scrape_stream():
     serial = serialNumber.encode("utf-8")
     ENVOY_PASSWORD=emupwGetMobilePasswd(serial, userName)
-    print(dt_string, 'Envoy password is', ENVOY_PASSWORD)
-    if DEBUG: print(dt_string, 'Username:',userName.decode())
+    log( 'Envoy password is' + ENVOY_PASSWORD)
+    if DEBUG: log( 'Username:',userName.decode())
     auth = HTTPDigestAuth(userName.decode(), ENVOY_PASSWORD)
-    if DEBUG: print(dt_string, 'auth:',auth)
+    if DEBUG: log( 'auth:',auth)
     marker = b'data: '
     while True:
         try:
             url = 'http://%s/stream/meter' % ENVOY_HOST
-            if DEBUG: print(dt_string, 'Url:', url)
-            stream = requests.get(url, auth=auth, stream=True, timeout=5)
-#            if DEBUG: print(dt_string, 'stream:', stream.content)
+            if DEBUG: log( 'Url:' + url)
+            stream = session.get(url, auth=auth, stream=True, timeout=5)
+#            if DEBUG: log( 'stream:' + stream.content)
             for line in stream.iter_lines():
-#                if DEBUG: print(dt_string, 'Line:', line)
+#                if DEBUG: log( 'Line:' + line)
                 if line.startswith(marker):
-                    if DEBUG: print(dt_string, 'Line marker:', line)
+                    if DEBUG: log( 'Line marker:' + line)
                     data = json.loads(line.replace(marker, b''))
-#                    if DEBUG: print(dt_string, 'Data:', data)
-                    json_string = json.dumps(data)                                   
+#                    if DEBUG: log( 'Data:' + data)
+                    json_string = json.dumps(data)
                     client.publish(topic= MQTT_TOPIC , payload= json_string, qos=0 )
         except requests.exceptions.RequestException as e:
-            print(dt_string, ' Exception fetching stream data: %s' % e)
+            log( ' Exception fetching stream data: %s' % e)
+        time.sleep(20)
 
 def main():
     #Use url https://envoy.local/production.json
     #stream_thread = threading.Thread(target=scrape_stream_production)
 
     #Use this for batteries url https://envoy.local/ivp/livedata/status
-    #stream_thread = threading.Thread(target=scrape_stream_livedata)  
+    #stream_thread = threading.Thread(target=scrape_stream_livedata)
 
     #Use url http://envoy.local/ivp/meters/reading
     #stream_thread = threading.Thread(target=scrape_stream_meters)
-
+    print(envoy_version)
     if envoy_version == 5:
         stream_thread = threading.Thread(target=scrape_stream)
         stream_thread.start()
@@ -436,7 +482,7 @@ def main():
         stream_thread = threading.Thread(target=scrape_stream_meters)
         stream_thread.start()
     else:
-        print(dt_string,'Don''t know what version to use, will not start')
+        log('Don''t know what version to use, will not start')
 
 if __name__ == '__main__':
     main()
